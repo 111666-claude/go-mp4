@@ -20,6 +20,19 @@ const (
 
 var ErrUnsupportedBoxVersion = errors.New("unsupported box version")
 
+// fieldReadHook is an optional, package-internal hook invoked while a box is
+// being unmarshalled, just before a field is read. leftBits is the number of
+// payload bits still unread. Returning override=true skips the generic read
+// for that field (used to derive hidden/control state from the stream).
+type fieldReadHook interface {
+	OnReadField(name string, leftBits uint64) (override bool, err error)
+}
+
+// fieldWriteHook is the marshalling counterpart of fieldReadHook.
+type fieldWriteHook interface {
+	OnWriteField(name string) (override bool, err error)
+}
+
 type marshaller struct {
 	writer bitio.Writer
 	wbits  uint64
@@ -90,6 +103,16 @@ func (m *marshaller) marshalStruct(t reflect.Type, v reflect.Value) error {
 
 		if !isTargetField(m.src, config) {
 			continue
+		}
+
+		if hk, ok := v.Addr().Interface().(fieldWriteHook); ok {
+			override, err := hk.OnWriteField(f.Name)
+			if err != nil {
+				return err
+			}
+			if override {
+				continue
+			}
 		}
 
 		err = m.marshal(ft, fv, config)
@@ -309,7 +332,7 @@ func (u *unmarshaller) unmarshal(t reflect.Type, v reflect.Value, config fieldCo
 	case reflect.Ptr:
 		err = u.unmarshalPtr(t, v, config)
 	case reflect.Struct:
-		err = u.unmarshalStruct(t, v)
+		err = u.unmarshalStructWithSize(t, v, config)
 	case reflect.Array:
 		err = u.unmarshalArray(t, v, config)
 	case reflect.Slice:
@@ -326,6 +349,28 @@ func (u *unmarshaller) unmarshal(t reflect.Type, v reflect.Value, config fieldCo
 		return fmt.Errorf("unsupported type: %s", t.Kind())
 	}
 	return err
+}
+
+// unmarshalStructWithSize unmarshals a nested struct. When the struct field
+// declares a fixed byte size (size is a non-zero multiple of 8), a child
+// unmarshaller bounded to that size is used, so length-unlimited slices inside
+// the struct (such as the trailing Opts of an alst entry) stop at the entry
+// boundary instead of consuming the rest of the box.
+func (u *unmarshaller) unmarshalStructWithSize(t reflect.Type, v reflect.Value, config fieldConfig) error {
+	if config.size != 0 && config.size%8 == 0 {
+		child := *u
+		child.size = uint64(config.size / 8)
+		child.rbits = 0
+		if err := child.unmarshalStruct(t, v); err != nil {
+			return err
+		}
+		u.rbits += child.rbits
+		if child.rbits != uint64(config.size) {
+			return fmt.Errorf("invalid alignment: fieldName=%s expected=%d actual=%d", config.name, config.size, child.rbits)
+		}
+		return nil
+	}
+	return u.unmarshalStruct(t, v)
 }
 
 func (u *unmarshaller) unmarshalPtr(t reflect.Type, v reflect.Value, config fieldConfig) error {
@@ -350,6 +395,19 @@ func (u *unmarshaller) unmarshalStruct(t reflect.Type, v reflect.Value) error {
 
 		if !isTargetField(u.dst, config) {
 			continue
+		}
+
+		// Optional per-field hook. The current struct (typically the box
+		// itself, or a nested custom-field object) may derive hidden state
+		// from the stream and take over the read for this field.
+		if hk, ok := v.Addr().Interface().(fieldReadHook); ok {
+			override, err := hk.OnReadField(f.Name, u.size*8-u.rbits)
+			if err != nil {
+				return err
+			}
+			if override {
+				continue
+			}
 		}
 
 		err = u.unmarshal(ft, fv, config)

@@ -90,6 +90,12 @@ func (m *stringfier) stringifyStruct(t reflect.Type, v reflect.Value, depth int,
 			continue
 		}
 
+		// "hidden" fields are internal control state (for example a flag that
+		// drives opt=dynamic fields) and must not appear in the string form.
+		if _, hidden := parseFieldTag(tagStr)["hidden"]; hidden {
+			continue
+		}
+
 		if config.cnst != "" {
 			continue
 		}
