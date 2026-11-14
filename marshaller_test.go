@@ -2,6 +2,10 @@ package mp4
 
 import (
 	"bytes"
+	"fmt"
+	"io"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/abema/go-mp4/internal/bitio"
@@ -340,6 +344,124 @@ func TestWriteVarint(t *testing.T) {
 			err := m.writeUvarint(tc.input)
 			require.NoError(t, err)
 			assert.Equal(t, tc.expected, b.Bytes())
+		})
+	}
+}
+
+// TestUnmarshalDeclaredSizeExceedsData checks that a box declaring a size far
+// larger than the data actually available is rejected without first allocating
+// a buffer sized from the declared value.
+func TestUnmarshalDeclaredSizeExceedsData(t *testing.T) {
+	// warm up reflection and box definitions so that the measurement below only
+	// accounts for allocations caused by the oversized input.
+	{
+		var hdlr Hdlr
+		_, _ = Unmarshal(bytes.NewReader([]byte("abc")), 3, &hdlr, Context{})
+		var mdat Mdat
+		_, _ = Unmarshal(bytes.NewReader([]byte("abc")), 3, &mdat, Context{})
+	}
+
+	measureAlloc := func(fn func()) uint64 {
+		fn() // warm up this specific path before measuring
+		var before, after runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+		fn()
+		runtime.ReadMemStats(&after)
+		return after.TotalAlloc - before.TotalAlloc
+	}
+
+	hdlrHeader := []byte{
+		0,                // version
+		0x00, 0x00, 0x00, // flags
+		0x00, 0x00, 0x00, 0x00,
+		'v', 'i', 'd', 'e', // handler type
+		0x00, 0x00, 0x00, 0x00, // reserved
+		0x00, 0x00, 0x00, 0x00, // reserved
+		0x00, 0x00, 0x00, 0x00, // reserved
+	}
+	hdlrData := append(append([]byte{}, hdlrHeader...), []byte("abc")...)
+
+	// each declared size is far larger than the 3 bytes actually provided.
+	for _, declaredSize := range []uint64{1024, 1025, 200000, 10000000} {
+		declaredSize := declaredSize
+		t.Run(fmt.Sprintf("hdlr/%d", declaredSize), func(t *testing.T) {
+			var (
+				n   uint64
+				err error
+			)
+			allocated := measureAlloc(func() {
+				var dst Hdlr
+				n, err = Unmarshal(bytes.NewReader(hdlrData), declaredSize, &dst, Context{})
+			})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "not enough bits")
+			assert.Equal(t, uint64(0), n)
+			// no buffer sized from the declared length may be allocated up front.
+			assert.Less(t, allocated, uint64(64*1024), "unexpected allocation: %d bytes", allocated)
+		})
+
+		t.Run(fmt.Sprintf("mdat/%d", declaredSize), func(t *testing.T) {
+			var (
+				n   uint64
+				err error
+			)
+			allocated := measureAlloc(func() {
+				var dst Mdat
+				n, err = Unmarshal(bytes.NewReader([]byte("abc")), declaredSize, &dst, Context{})
+			})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "not enough bits")
+			assert.Equal(t, uint64(0), n)
+			assert.Less(t, allocated, uint64(64*1024), "unexpected allocation: %d bytes", allocated)
+		})
+	}
+}
+
+// TestUnmarshalPreservesPositionAndContent checks that regular fields and
+// media data boxes keep the correct reader position and byte content, both
+// for small and large payloads.
+func TestUnmarshalPreservesPositionAndContent(t *testing.T) {
+	hdlrHeader := []byte{
+		0,                // version
+		0x00, 0x00, 0x00, // flags
+		0x00, 0x00, 0x00, 0x00,
+		'v', 'i', 'd', 'e', // handler type
+		0x00, 0x00, 0x00, 0x00, // reserved
+		0x00, 0x00, 0x00, 0x00, // reserved
+		0x00, 0x00, 0x00, 0x00, // reserved
+	}
+
+	for _, nameSize := range []int{1024, 1025, 200000, 10000000} {
+		nameSize := nameSize
+		t.Run(fmt.Sprintf("hdlr/%d", nameSize), func(t *testing.T) {
+			name := strings.Repeat("x", nameSize-1) + "\x00"
+			bin := append(append([]byte{}, hdlrHeader...), []byte(name)...)
+			r := bytes.NewReader(bin)
+			var dst Hdlr
+			n, err := Unmarshal(r, uint64(len(bin)), &dst, Context{})
+			require.NoError(t, err)
+			assert.Equal(t, uint64(len(bin)), n)
+			assert.Equal(t, strings.Repeat("x", nameSize-1), dst.Name)
+			pos, err := r.Seek(0, io.SeekCurrent)
+			require.NoError(t, err)
+			assert.Equal(t, int64(len(bin)), pos)
+		})
+	}
+
+	for _, dataSize := range []int{1024, 1025, 200000, 10000000} {
+		dataSize := dataSize
+		t.Run(fmt.Sprintf("mdat/%d", dataSize), func(t *testing.T) {
+			payload := bytes.Repeat([]byte{0xab, 0xcd}, dataSize/2)
+			r := bytes.NewReader(payload)
+			var dst Mdat
+			n, err := Unmarshal(r, uint64(len(payload)), &dst, Context{})
+			require.NoError(t, err)
+			assert.Equal(t, uint64(len(payload)), n)
+			assert.Equal(t, payload, dst.Data)
+			pos, err := r.Seek(0, io.SeekCurrent)
+			require.NoError(t, err)
+			assert.Equal(t, int64(len(payload)), pos)
 		})
 	}
 }

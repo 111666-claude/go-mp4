@@ -2,6 +2,7 @@ package mp4
 
 import (
 	"bytes"
+	"encoding/binary"
 	"os"
 	"testing"
 
@@ -237,4 +238,48 @@ func TestReadBoxStructureZeroSize(t *testing.T) {
 		return nil, nil
 	})
 	require.Error(t, err)
+}
+
+// TestReadBoxStructureDeclaredSizeExceedsData checks that a box whose declared
+// size is much larger than the data present is rejected when its payload is
+// read, instead of allocating memory according to the declared size.
+func TestReadBoxStructureDeclaredSizeExceedsData(t *testing.T) {
+	const declaredSize = 10000000
+
+	// a small box followed by a media box that claims a far larger size
+	bin := []byte{
+		0x00, 0x00, 0x00, 0x10, // size
+		'f', 't', 'y', 'p', // type
+		'i', 's', 'o', 'm', // major brand
+		0x00, 0x00, 0x00, 0x00, // minor version
+	}
+	mdatHeader := make([]byte, 8)
+	binary.BigEndian.PutUint32(mdatHeader, declaredSize)
+	copy(mdatHeader[4:], "mdat")
+	bin = append(bin, mdatHeader...)
+	bin = append(bin, []byte("abc")...)
+
+	var (
+		seenMdat bool
+		readExp  uint64
+		readErr  error
+	)
+	_, err := ReadBoxStructure(bytes.NewReader(bin), func(h *ReadHandle) (interface{}, error) {
+		switch h.BoxInfo.Type {
+		case BoxTypeFtyp():
+			box, n, err := h.ReadPayload()
+			require.NoError(t, err)
+			assert.IsType(t, &Ftyp{}, box)
+			assert.Equal(t, uint64(8), n)
+		case BoxTypeMdat():
+			seenMdat = true
+			_, readExp, readErr = h.ReadPayload()
+		}
+		return nil, nil
+	})
+	require.NoError(t, err)
+	require.True(t, seenMdat)
+	require.Error(t, readErr)
+	assert.Contains(t, readErr.Error(), "not enough bits")
+	assert.Equal(t, uint64(0), readExp)
 }

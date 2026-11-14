@@ -2,6 +2,7 @@ package mp4
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"math"
 	"strings"
@@ -2785,39 +2786,38 @@ func TestFtypCompatibleBrands(t *testing.T) {
 }
 
 func TestHdlrLargeSize(t *testing.T) {
-	t.Run("no-error", func(t *testing.T) {
-		bin := append([]byte{
-			0,                // version
-			0x00, 0x00, 0x00, // flags
-			0x00, 0x00, 0x00, 0x00,
-			'v', 'i', 'd', 'e', // handler type
-			0x00, 0x00, 0x00, 0x00, // reserved
-			0x00, 0x00, 0x00, 0x00, // reserved
-			0x00, 0x00, 0x00, 0x00, // reserved
-		}, []byte(strings.Repeat("x", 1024))...)
-		dst := Hdlr{}
-		r := bytes.NewReader(bin)
-		n, err := Unmarshal(r, uint64(len(bin)), &dst, Context{})
-		require.NoError(t, err)
-		assert.Equal(t, uint64(len(bin)), n)
-		assert.Equal(t, strings.Repeat("x", 1024), dst.Name)
-	})
+	header := []byte{
+		0,                // version
+		0x00, 0x00, 0x00, // flags
+		0x00, 0x00, 0x00, 0x00,
+		'v', 'i', 'd', 'e', // handler type
+		0x00, 0x00, 0x00, 0x00, // reserved
+		0x00, 0x00, 0x00, 0x00, // reserved
+		0x00, 0x00, 0x00, 0x00, // reserved
+	}
 
-	t.Run("error", func(t *testing.T) {
-		bin := append([]byte{
-			0,                // version
-			0x00, 0x00, 0x00, // flags
-			0x00, 0x00, 0x00, 0x00,
-			'v', 'i', 'd', 'e', // handler type
-			0x00, 0x00, 0x00, 0x00, // reserved
-			0x00, 0x00, 0x00, 0x00, // reserved
-			0x00, 0x00, 0x00, 0x00, // reserved
-		}, []byte(strings.Repeat("x", 1025))...)
+	for _, nameSize := range []int{1024, 1025, 200000, 10000000} {
+		nameSize := nameSize
+		t.Run(fmt.Sprintf("no-error/%d", nameSize), func(t *testing.T) {
+			bin := append(append([]byte{}, header...), []byte(strings.Repeat("x", nameSize))...)
+			dst := Hdlr{}
+			r := bytes.NewReader(bin)
+			n, err := Unmarshal(r, uint64(len(bin)), &dst, Context{})
+			require.NoError(t, err)
+			assert.Equal(t, uint64(len(bin)), n)
+			assert.Equal(t, strings.Repeat("x", nameSize), dst.Name)
+		})
+	}
+
+	t.Run("declared-size-exceeds-data", func(t *testing.T) {
+		// declare a 10,000,000-byte name but provide only 3 bytes
+		bin := append(append([]byte{}, header...), []byte("abc")...)
 		dst := Hdlr{}
 		r := bytes.NewReader(bin)
-		_, err := Unmarshal(r, uint64(len(bin)), &dst, Context{})
+		_, err := Unmarshal(r, 10000000, &dst, Context{})
 		require.Error(t, err)
-		assert.Equal(t, "too large hdlr box", err.Error())
+		assert.Contains(t, err.Error(), "not enough bits")
+		assert.Empty(t, dst.Name)
 	})
 }
 
