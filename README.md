@@ -116,6 +116,62 @@ The following sample code adds a metadata box and updates the chunk offsets in t
 
 [Sample Code: Insert Metadata and Update stco box](https://gist.github.com/sunfish-shogi/cccde016a38c66d32c07a0234368804e)
 
+### Rewriting Metadata without Re-encoding Media
+
+When you only change metadata such as a title or a cover image (typically
+`udta`/`meta`), the media payload must not be re-encoded.
+[RewriteFile](https://pkg.go.dev/github.com/abema/go-mp4#RewriteFile) performs a
+file-oriented metadata rewrite: it streams the `mdat` payloads byte-for-byte
+with bounded memory, recomputes every nested box size automatically, and keeps
+the absolute file-offset structures consistent when boxes grow or shrink.
+
+```go
+input, err := os.Open("input.mp4")
+if err != nil {
+    // ...
+}
+defer input.Close()
+
+output, err := os.Create("output.mp4")
+if err != nil {
+    // ...
+}
+defer output.Close()
+
+r := bufseekio.NewReadSeeker(input, 128*1024, 4)
+err = mp4.RewriteFile(r, output, func(h *mp4.RewriteHandle) error {
+    if h.BoxInfo.Type == mp4.BoxTypeUdta() {
+        // Build a complete replacement box (including its header) in a small
+        // buffer and write it to h.Writer. Writing nothing preserves the
+        // original box byte-for-byte.
+        var buf bytes.Buffer
+        w := mp4.NewWriter(&buf)
+        if _, err := w.StartBox(&mp4.BoxInfo{Type: mp4.BoxTypeUdta()}); err != nil {
+            return err
+        }
+        if _, err := w.Write([]byte("new user data")); err != nil {
+            return err
+        }
+        if _, err := w.EndBox(); err != nil {
+            return err
+        }
+        _, err := h.Writer.Write(buf.Bytes())
+        return err
+    }
+    return nil
+})
+```
+
+The rewriter handles both layouts (`moov` before or after `mdat`) and:
+
+- shifts `stco`/`co64` chunk offsets, transparently converting an `stco` to a
+  `co64` when a shifted offset no longer fits in 32 bits,
+- shifts `tfhd` base-data offsets and `tfra` moof offsets,
+- preserves unknown boxes that do not need rewriting byte-for-byte,
+- rejects structures it cannot update safely (for example an absolute `saio`
+  outside a `moof`, a 32bit `tfra` entry that would overflow, or a malformed
+  input) before any output byte is produced.
+
 ### User-defined Boxes
 
 You can define additional box types as follows:
