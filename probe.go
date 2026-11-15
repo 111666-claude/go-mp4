@@ -374,6 +374,8 @@ func detectAACProfile(esds *Esds) (oti, audOTI uint8, err error) {
 	if configDscr == nil || configDscr.DecoderConfigDescriptor == nil {
 		return 0, 0, errors.New("DecoderConfigDescriptor not found")
 	}
+	// Audio Object Types defined in ISO/IEC 14496-3 are signaled with
+	// the 0x40 (Audio ISO/IEC 14496-3) Object Type Indication in MP4.
 	if configDscr.DecoderConfigDescriptor.ObjectTypeIndication != 0x40 {
 		return 0, 0, fmt.Errorf("unsupported object type indication: %d", int(configDscr.DecoderConfigDescriptor.ObjectTypeIndication))
 	}
@@ -388,10 +390,10 @@ func detectAACProfile(esds *Esds) (oti, audOTI uint8, err error) {
 
 	// audio object type
 	audioObjectType, read, err := getAudioObjectType(r)
-	remaining -= read
 	if err != nil {
 		return 0, 0, err
 	}
+	remaining -= read
 
 	// sampling frequency index
 	samplingFrequencyIndex, err := r.ReadBits(4)
@@ -406,36 +408,100 @@ func detectAACProfile(esds *Esds) (oti, audOTI uint8, err error) {
 		remaining -= 24
 	}
 
+	if audioObjectType == 5 || audioObjectType == 29 {
+		// HE-AAC (explicit signaling): SBR (5) or parametric stereo (29).
+		// For these object types, extensionSamplingFrequencyIndex and
+		// extensionChannelConfiguration follow the core channel
+		// configuration and the config ends there.
+		extSamplingFrequencyIndex, err := r.ReadBits(4)
+		if err != nil {
+			return 0, 0, err
+		}
+		remaining -= 4
+		if extSamplingFrequencyIndex[0] == 0x0f {
+			if _, err = r.ReadBits(24); err != nil {
+				return 0, 0, err
+			}
+			remaining -= 24
+		}
+		if _, err = r.ReadBits(4); err != nil { // extension channel configuration
+			return 0, 0, err
+		}
+		remaining -= 4
+
+		// AOT 5 means SBR only, AOT 29 means SBR plus parametric stereo.
+		return 0x40, audioObjectType, nil
+	}
+
 	// channel configuration
 	if _, err = r.ReadBits(4); err != nil {
 		return 0, 0, err
 	}
 	remaining -= 4
 
-	if audioObjectType == 5 || audioObjectType == 29 {
-		// HE-AAC
-		return 40, 5, nil
-
+	// GASpecificConfig: frameLengthFlag(1) + dependsOnCoreCoder(1) +
+	// extensionFlag(1). The sync extension follows these bits, so they
+	// must be consumed; reading the sync word at the wrong position
+	// makes implicit SBR/PS signaling undetectable.
+	if _, err = r.ReadBits(3); err != nil {
+		return 0, 0, err
 	}
+	remaining -= 3
 
-	if remaining >= 16 {
+	if audioObjectType == 2 && remaining >= 20 {
 		syncExtensionType, err := r.ReadBits(11)
 		if err != nil {
 			return 0, 0, err
 		}
+		remaining -= 11
 		if syncExtensionType[0] == 0x2 && syncExtensionType[1] == 0xb7 {
-			extAudioObjectType, _, err := getAudioObjectType(r)
+			extAudioObjectType, extRead, err := getAudioObjectType(r)
 			if err != nil {
 				return 0, 0, err
 			}
+			remaining -= extRead
 			if extAudioObjectType == 5 || extAudioObjectType == 22 {
 				sbr, err := r.ReadBits(1)
 				if err != nil {
 					return 0, 0, err
 				}
+				remaining--
 				if sbr[0] != 0 {
-					// HE-AAC
-					return 40, 5, nil
+					if extAudioObjectType == 5 {
+						// extension sampling frequency index
+						extSamplingFrequencyIndex, err := r.ReadBits(4)
+						if err != nil {
+							return 0, 0, err
+						}
+						remaining -= 4
+						if extSamplingFrequencyIndex[0] == 0x0f {
+							if _, err := r.ReadBits(24); err != nil {
+								return 0, 0, err
+							}
+							remaining -= 24
+						}
+						// parametric stereo extension (HE-AAC v2)
+						if remaining >= 12 {
+							psSyncExtensionType, err := r.ReadBits(11)
+							if err != nil {
+								return 0, 0, err
+							}
+							remaining -= 11
+							if psSyncExtensionType[0] == 0x5 && psSyncExtensionType[1] == 0x48 {
+								psPresent, err := r.ReadBits(1)
+								if err != nil {
+									return 0, 0, err
+								}
+								remaining--
+								if psPresent[0] != 0 {
+									// HE-AAC v2 (SBR + parametric stereo)
+									return 0x40, 29, nil
+								}
+							}
+						}
+					}
+					// HE-AAC v1 (SBR)
+					return 0x40, 5, nil
 				}
 			}
 		}
@@ -443,7 +509,7 @@ func detectAACProfile(esds *Esds) (oti, audOTI uint8, err error) {
 
 	if audioObjectType == 2 {
 		// AAC-LC
-		return 40, 2, nil
+		return 0x40, 2, nil
 	}
 
 	return 0, 0, fmt.Errorf("unsupported audio object type: %d", audioObjectType)
@@ -460,18 +526,19 @@ func findDescriptorByTag(dscrs []Descriptor, tag int8) *Descriptor {
 
 func getAudioObjectType(r bitio.Reader) (byte, int, error) {
 	audioObjectType, err := r.ReadBits(5)
-	read := 5
 	if err != nil {
-		return 0, read, err
+		return 0, 0, err
 	}
-	if audioObjectType[0] == 0x1f {
-		audioObjectType, err = r.ReadBits(6)
-		read += 6
-		if err != nil {
-			return 0, read, err
-		}
+	if audioObjectType[0] != 0x1f {
+		return audioObjectType[0], 5, nil
 	}
-	return audioObjectType[0], read, nil
+	audioObjectType, err = r.ReadBits(6)
+	if err != nil {
+		return 0, 0, err
+	}
+	// Values above 31 are encoded as 0x1f followed by a 6-bit value
+	// to which 32 must be added.
+	return audioObjectType[0] + 32, 11, nil
 }
 
 func probeMoof(r io.ReadSeeker, bi *BoxInfo) (*Segment, error) {

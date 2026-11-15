@@ -61,7 +61,7 @@ func TestProbe(t *testing.T) {
 	assert.Equal(t, uint32(44100), info.Tracks[1].Timescale)
 	assert.Equal(t, uint64(45124), info.Tracks[1].Duration)
 	assert.Equal(t, CodecMP4A, info.Tracks[1].Codec)
-	assert.Equal(t, uint8(40), info.Tracks[1].MP4A.OTI)
+	assert.Equal(t, uint8(0x40), info.Tracks[1].MP4A.OTI)
 	assert.Equal(t, uint8(2), info.Tracks[1].MP4A.AudOTI)
 	assert.Equal(t, uint16(2), info.Tracks[1].MP4A.ChannelCount)
 	assert.False(t, info.Tracks[1].Encrypted)
