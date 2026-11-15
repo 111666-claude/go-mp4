@@ -72,6 +72,37 @@ if err != nil {
 fmt.Println("track num:", len(info.Tracks))
 ```
 
+### Timed event messages (emsg)
+
+`ReadEmsgs` scans a (fragmented) MP4 file in file order and returns every event
+carried by an `emsg` box. Media data (`mdat`) is skipped by seeking, so it is
+never loaded into memory. Both `emsg` versions are supported: version 1 events
+carry an absolute presentation time, while version 0 events are relative to the
+start of their media segment, which the caller supplies by segment index or with
+a callback.
+
+```go
+events, err := mp4.ReadEmsgs(file, mp4.WithEmsgSegmentStartTimes([]time.Duration{
+	0,
+	10 * time.Second,
+	20 * time.Second,
+}))
+if err != nil {
+   :
+}
+for _, event := range events {
+	fmt.Println(event.Id, event.SchemeIdUri, event.PresentationTime, event.Duration)
+	fmt.Printf("payload: %q\n", event.MessageData)
+}
+```
+
+Use `WalkEmsgs` to stream events instead of collecting them, and
+`WithEmsgSegmentStartTime` when segment start times are not known up front.
+Other options are `WithEmsgMaxPayloadSize` (default `DefaultEmsgMaxPayloadSize`).
+Errors such as `ErrEmsgInvalidBox`, `ErrEmsgZeroTimescale`,
+`ErrEmsgMissingSegmentStartTime`, `ErrEmsgPayloadTooLarge` and
+`ErrEmsgTimeOverflow` can be tested with `errors.Is`.
+
 ### Writing
 
 Writer helps you write a box tree.
