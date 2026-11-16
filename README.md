@@ -164,3 +164,31 @@ For example, `mp4tool dump MP4_FILE_NAME` command prints MP4 box tree as follows
     [trun] Size=424 ... (use -a option to show all)
 [mdat] Size=44569 Data=[...] (use -mdat option to expand)
 ```
+
+### Producer Reference Time (prft)
+
+The `prft` box (ISO/IEC 14496-12) ties a point on a track's media timeline
+to a wall-clock NTP timestamp, which lets you align fragmented media with
+external event logs. Both version 0 (32-bit media time) and version 1
+(64-bit media time) are supported for reading and writing.
+
+`mp4tool prft` lists every prft anchor found in a fragmented MP4 file:
+
+```sh
+mp4tool prft INPUT.mp4
+```
+
+Pass `-query` with a track ID and a media time to resolve the corresponding
+wall clock. Anchors from consecutive fragments are combined automatically,
+and the media payload is never read or modified:
+
+```sh
+mp4tool prft -query -track-id 1 -media-time 3090000 INPUT.mp4
+```
+
+The same functionality is available through the Go API via
+[ReadProducerReferenceTimes](https://pkg.go.dev/github.com/abema/go-mp4#ReadProducerReferenceTimes),
+[ResolveNtpTimestamp](https://pkg.go.dev/github.com/abema/go-mp4#ResolveNtpTimestamp),
+and [ResolveWallClock](https://pkg.go.dev/github.com/abema/go-mp4#ResolveWallClock).
+Unknown tracks, zero timescales, 32-bit wraparound ambiguity, truncated
+boxes, and NTP time overflow all return explicit, distinguishable errors.
