@@ -22,6 +22,21 @@ func checkPayloadSize(r io.ReadSeeker, bi *BoxInfo) error {
 
 type BoxPath []BoxType
 
+// String renders the box path as slash-separated box types for diagnostics.
+func (p BoxPath) String() string {
+	if len(p) == 0 {
+		return ""
+	}
+	b := make([]byte, 0, len(p)*5)
+	for i, t := range p {
+		if i != 0 {
+			b = append(b, '/')
+		}
+		b = append(b, t[0], t[1], t[2], t[3])
+	}
+	return string(b)
+}
+
 func (lhs BoxPath) compareWith(rhs BoxPath) (forwardMatch bool, match bool) {
 	if len(lhs) > len(rhs) {
 		return false, false
@@ -48,18 +63,61 @@ type ReadHandle struct {
 
 type ReadHandler func(handle *ReadHandle) (val interface{}, err error)
 
+// hdrValidationState tracks the static HDR metadata boxes (mdcv, clli)
+// encountered while traversing a box tree, so that their placement
+// (directly inside a video sample entry) and uniqueness can be validated.
+// It is intentionally kept out of Context and BoxInfo because it is purely
+// internal traversal state and must not affect the externally visible
+// values returned to callers.
+type hdrValidationState struct {
+	// seen maps the file offset of each video sample entry to the set of HDR
+	// box types already found directly inside that entry. The offset uniquely
+	// identifies a sample entry, so equally typed entries in different tracks
+	// are tracked independently.
+	seen map[uint64]map[BoxType]struct{}
+}
+
+func newHDRValidationState() *hdrValidationState {
+	return &hdrValidationState{seen: make(map[uint64]map[BoxType]struct{})}
+}
+
+// validate enforces the hierarchy and uniqueness rules for the mdcv and
+// clli boxes. parentPath is the path of the box that directly contains
+// boxType and parentOffset is that parent box's file offset. It is a no-op
+// for every other box type.
+func (s *hdrValidationState) validate(boxType BoxType, parentPath BoxPath, parentOffset uint64, ctx Context) error {
+	if boxType != BoxTypeMdcv() && boxType != BoxTypeClli() {
+		return nil
+	}
+	if len(parentPath) == 0 || !isVisualSampleEntryType(parentPath[len(parentPath)-1], ctx) {
+		return fmt.Errorf("%w: type=%s path=%s", ErrInvalidHDRBoxPlacement,
+			boxType.String(), append(append(BoxPath{}, parentPath...), boxType).String())
+	}
+	set := s.seen[parentOffset]
+	if set == nil {
+		set = make(map[BoxType]struct{})
+		s.seen[parentOffset] = set
+	}
+	if _, duplicated := set[boxType]; duplicated {
+		return fmt.Errorf("%w: type=%s path=%s", ErrDuplicateHDRBox,
+			boxType.String(), append(append(BoxPath{}, parentPath...), boxType).String())
+	}
+	set[boxType] = struct{}{}
+	return nil
+}
+
 func ReadBoxStructure(r io.ReadSeeker, handler ReadHandler, params ...interface{}) ([]interface{}, error) {
 	if _, err := r.Seek(0, io.SeekStart); err != nil {
 		return nil, err
 	}
-	return readBoxStructure(r, 0, true, nil, Context{}, handler, params)
+	return readBoxStructure(r, 0, true, nil, 0, Context{}, handler, params, newHDRValidationState())
 }
 
 func ReadBoxStructureFromInternal(r io.ReadSeeker, bi *BoxInfo, handler ReadHandler, params ...interface{}) (interface{}, error) {
-	return readBoxStructureFromInternal(r, bi, nil, handler, params)
+	return readBoxStructureFromInternal(r, bi, nil, 0, handler, params, newHDRValidationState())
 }
 
-func readBoxStructureFromInternal(r io.ReadSeeker, bi *BoxInfo, path BoxPath, handler ReadHandler, params []interface{}) (interface{}, error) {
+func readBoxStructureFromInternal(r io.ReadSeeker, bi *BoxInfo, path BoxPath, parentOffset uint64, handler ReadHandler, params []interface{}, state *hdrValidationState) (interface{}, error) {
 	if _, err := bi.SeekToPayload(r); err != nil {
 		return nil, err
 	}
@@ -113,6 +171,13 @@ func readBoxStructureFromInternal(r io.ReadSeeker, bi *BoxInfo, path BoxPath, ha
 	newPath := make(BoxPath, len(path)+1)
 	copy(newPath, path)
 	newPath[len(path)] = bi.Type
+
+	// Validate the placement and uniqueness of the static HDR metadata
+	// boxes (mdcv, clli), which must appear at most once and only directly
+	// inside a video sample entry (VisualSampleEntry).
+	if err := state.validate(bi.Type, path, parentOffset, ctx); err != nil {
+		return nil, err
+	}
 
 	h := &ReadHandle{
 		Params:  params,
@@ -171,7 +236,7 @@ func readBoxStructureFromInternal(r io.ReadSeeker, bi *BoxInfo, path BoxPath, ha
 		}
 
 		childrenSize := bi.Offset + bi.Size - childrenOffset
-		return readBoxStructure(r, childrenSize, false, newPath, ctx, handler, params)
+		return readBoxStructure(r, childrenSize, false, newPath, bi.Offset, ctx, handler, params, state)
 	}
 
 	if val, err := handler(h); err != nil {
@@ -183,7 +248,7 @@ func readBoxStructureFromInternal(r io.ReadSeeker, bi *BoxInfo, path BoxPath, ha
 	}
 }
 
-func readBoxStructure(r io.ReadSeeker, totalSize uint64, isRoot bool, path BoxPath, ctx Context, handler ReadHandler, params []interface{}) ([]interface{}, error) {
+func readBoxStructure(r io.ReadSeeker, totalSize uint64, isRoot bool, path BoxPath, parentOffset uint64, ctx Context, handler ReadHandler, params []interface{}, state *hdrValidationState) ([]interface{}, error) {
 	vals := make([]interface{}, 0, 8)
 
 	for isRoot || totalSize >= SmallHeaderSize {
@@ -201,7 +266,7 @@ func readBoxStructure(r io.ReadSeeker, totalSize uint64, isRoot bool, path BoxPa
 
 		bi.Context = ctx
 
-		val, err := readBoxStructureFromInternal(r, bi, path, handler, params)
+		val, err := readBoxStructureFromInternal(r, bi, path, parentOffset, handler, params, state)
 		if err != nil {
 			return nil, err
 		}
