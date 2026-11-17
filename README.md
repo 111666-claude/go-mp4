@@ -116,6 +116,38 @@ The following sample code adds a metadata box and updates the chunk offsets in t
 
 [Sample Code: Insert Metadata and Update stco box](https://gist.github.com/sunfish-shogi/cccde016a38c66d32c07a0234368804e)
 
+### Chapters (chpl)
+
+The library supports QuickTime/Nero chapter list boxes (`chpl`, located at `moov/udta/chpl`).
+Chapter start times are handled as `time.Duration` because the box stores them in
+100-nanosecond units, independent of the movie timescale.
+Media data and every other box are copied byte-for-byte, so editing chapters never
+re-encodes the media.
+
+```go
+// read
+chapters, err := mp4.ReadChapters(inputFile)
+
+// add one chapter (the chpl box is created when the file has none)
+err = mp4.AddChapter(inputFile, outputFile, 90*time.Second, "Introduction")
+
+// replace the whole chapter list; an empty slice removes the chpl box
+err = mp4.ReplaceChapters(inputFile, outputFile, []mp4.Chapter{
+	{StartTime: 0,                Title: "Opening"},
+	{StartTime: 30 * time.Second, Title: "Main"},
+})
+
+// remove the chpl box
+err = mp4.RemoveChapters(inputFile, outputFile)
+```
+
+Editing fails with a typed error for invalid input: empty or too long titles,
+non-UTF-8 titles, duplicate or backward start times, corrupted `chpl` boxes, and
+unsupported layouts such as fragmented MP4, multiple `moov`/`mdat` boxes, or boxes
+that extend to end of file.
+When the `moov` box precedes the `mdat` box, the `stco`/`co64` chunk offsets are
+shifted automatically; a `stco` value that would overflow is reported as an error.
+
 ### User-defined Boxes
 
 You can define additional box types as follows:
