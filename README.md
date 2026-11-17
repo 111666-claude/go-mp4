@@ -138,6 +138,51 @@ func (*Xxxx) GetType() BoxType {
 }
 ```
 
+### Track Display Rotation
+
+Phone videos store their capture orientation in the tkhd display matrix, and
+editing systems normally fix the presentation direction by rewriting that
+matrix instead of re-encoding the media. The rotation helpers edit exactly
+those 36 matrix bytes: the mdat payload, the unknown boxes and every other
+track property (including the tkhd width and height) are copied verbatim.
+
+The rotation is the clockwise angle applied while the track is presented, i.e.
+the value used by the camera orientation hints of iOS and Android. Only 0, 90,
+180 and 270 degrees are supported. (FFmpeg reports the opposite sign in its
+display matrix side data, so `-display_rotation -90` corresponds to
+`Rotation90`.)
+
+```go
+// read the display rotation of a video track
+rotation, err := mp4.ReadTrackRotation(file, 1)
+
+// rewrite the matrix of track 1 in a copy of the file
+out, _ := os.Create("rotated.mp4")
+err = mp4.RewriteTrackRotation(file, out, 1, mp4.Rotation90)
+
+// or patch the file in place (opened with os.O_RDWR)
+err = mp4.SetTrackRotation(rwFile, 1, mp4.Rotation90)
+```
+
+Because the matrix is a fixed-size field, neither the file size nor any box
+offset changes, so stco/co64 chunk offsets, tfhd base data offsets and tfra
+moof offsets stay valid without adjustment, and the result parses again with
+the regular readers.
+
+The helpers return distinguishable errors: `ErrTrackNotFound` for an unknown
+track ID, `ErrTrackNotVideo` for a non-video track (for example the audio
+track), `ErrDuplicateTrackID` when two trak boxes share an ID,
+`ErrInvalidRotation` for an angle other than 0/90/180/270,
+`ErrInvalidTrackMatrix` for a matrix which is not a pure cardinal rotation,
+and `ErrInvalidBoxStructure` for a broken box layout (truncated box, size
+smaller than its header, box exceeding its parent, trailing bytes).
+
+`mp4tool rotate` exposes the same operation from the command line:
+
+```sh
+mp4tool rotate -track-id 1 -rotation 90 INPUT.mp4 OUTPUT.mp4
+```
+
 ### Buffering
 
 go-mp4 does not buffer I/O.
