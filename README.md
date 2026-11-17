@@ -138,6 +138,37 @@ func (*Xxxx) GetType() BoxType {
 }
 ```
 
+### Edit List Timeline
+
+A track's `elst` box (edit list) describes how the media is presented: it can
+start with an empty edit (blank playback), skip the beginning of the media,
+or present parts of it in a different order. The media time alone is
+therefore not the playback time a player shows. `NewEditListTimeline` turns
+the track's `elst`, `mvhd` and `mdhd` boxes into a lookup table:
+
+```go
+var mvhd *mp4.Mvhd
+var mdhd *mp4.Mdhd
+var elst *mp4.Elst
+// extract the boxes with ExtractBoxesWithPayload ...
+
+timeline, err := mp4.NewEditListTimeline(elst, mvhd, mdhd)
+if err != nil {
+	:
+}
+// playback time in movie timescale units -> media time in media timescale units
+mediaTime, err := timeline.MediaTimeAt(1500)
+```
+
+An empty edit reports `mp4.ErrEditListPlaybackTimeInEmptyEdit`, and playback
+times outside the edit list report `mp4.ErrEditListPlaybackTimeOutOfRange`.
+A track without an `elst` box uses the identity timeline, in which playback
+time and media time differ only by the mvhd/mdhd timescale conversion.
+`timeline.Segments()` returns the movie-time and media-time range of every
+edit. Only `elst` versions 0 and 1 and a media rate of 1.0 are supported;
+invalid timescales, rates, entries and overflowing time calculations are
+reported as distinct errors.
+
 ### Buffering
 
 go-mp4 does not buffer I/O.
