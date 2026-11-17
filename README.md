@@ -72,6 +72,27 @@ if err != nil {
 fmt.Println("track num:", len(info.Tracks))
 ```
 
+#### Fragment sample index (fMP4)
+
+For fragmented MP4, [BuildFragmentIndex](https://pkg.go.dev/github.com/abema/go-mp4#BuildFragmentIndex) reconstructs every sample's absolute file offset, size, DTS and PTS from the `trex` defaults in `moov/mvex` and the `moof/traf/tfhd/tfdt/trun` boxes. It supports multiple `traf`/`trun` boxes, default value inheritance, signed composition time offsets and inter-fragment decode time continuity.
+
+```go
+index, err := mp4.BuildFragmentIndex(file)
+if err != nil {
+   :
+}
+for _, track := range index.Tracks {
+  for _, sample := range track.Samples {
+    // sample.DataOffset, sample.Size, sample.DTS, sample.PTS ...
+    data, err := mp4.ReadFragmentSampleData(file, sample)
+    if err != nil {
+       :
+    }
+    _ = data
+  }
+}
+```
+
 ### Writing
 
 Writer helps you write a box tree.
