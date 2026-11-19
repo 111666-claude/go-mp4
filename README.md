@@ -116,6 +116,56 @@ The following sample code adds a metadata box and updates the chunk offsets in t
 
 [Sample Code: Insert Metadata and Update stco box](https://gist.github.com/sunfish-shogi/cccde016a38c66d32c07a0234368804e)
 
+### Fast Start (Web Optimization)
+
+When a non-fragmented MP4 stores its `moov` box after the `mdat` box, a player
+must download the whole file before it can start playback. `FastStart` moves
+the single `moov` box in front of the `mdat` box and rewrites every
+`stco`/`co64` chunk offset accordingly, so playback can begin as soon as the
+header is available.
+
+```go
+input, err := os.Open("input.mp4")
+if err != nil {
+    // ...
+}
+defer input.Close()
+
+output, err := os.Create("output.mp4")
+if err != nil {
+    // ...
+}
+defer output.Close()
+
+if err := mp4.FastStart(input, output); err != nil {
+    // ...
+}
+```
+
+`FastStart` targets single-`moov`, non-fragmented MP4 files. It returns
+`mp4.ErrFastStartNotApplicable` for fragmented files (or those with multiple
+`moov`/`mdat` boxes), `mp4.ErrInvalidBox` for a corrupted box structure, and
+`mp4.ErrChunkOffsetOverflow` when a relocated offset does not fit in the
+offset table. Unknown boxes and `mdat` payloads are streamed byte-by-byte
+with a bounded buffer, so large media data is never loaded into memory; an
+already fast-start input is emitted byte-identically.
+
+The file-oriented `FastStartFile` writes to a temporary file and renames it
+into place only on success, so a failed write never leaves a truncated
+destination:
+
+```go
+if err := mp4.FastStartFile("input.mp4", "output.mp4"); err != nil {
+    // ...
+}
+```
+
+The `mp4tool` CLI exposes the same operation as:
+
+```sh
+mp4tool alpha faststart INPUT.mp4 OUTPUT.mp4
+```
+
 ### User-defined Boxes
 
 You can define additional box types as follows:

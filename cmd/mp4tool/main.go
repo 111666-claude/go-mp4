@@ -8,6 +8,7 @@ import (
 	"github.com/abema/go-mp4/cmd/mp4tool/internal/dump"
 	"github.com/abema/go-mp4/cmd/mp4tool/internal/edit"
 	"github.com/abema/go-mp4/cmd/mp4tool/internal/extract"
+	"github.com/abema/go-mp4/cmd/mp4tool/internal/faststart"
 	"github.com/abema/go-mp4/cmd/mp4tool/internal/probe"
 	"github.com/abema/go-mp4/cmd/mp4tool/internal/psshdump"
 )
@@ -50,6 +51,8 @@ func alpha(args []string) int {
 		return edit.Main(args[1:])
 	case "divide":
 		return divide.Main(args[1:])
+	case "faststart":
+		return faststart.Main(args[1:])
 	default:
 		printUsage()
 		return 1
@@ -66,4 +69,5 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  extract      : extract specific box")
 	fmt.Fprintln(os.Stderr, "  alpha edit")
 	fmt.Fprintln(os.Stderr, "  alpha divide")
+	fmt.Fprintln(os.Stderr, "  alpha faststart")
 }
