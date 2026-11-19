@@ -72,6 +72,27 @@ if err != nil {
 fmt.Println("track num:", len(info.Tracks))
 ```
 
+[NewSampleReader](https://pkg.go.dev/github.com/abema/go-mp4#NewSampleReader) reads the samples of non-fragmented tracks.
+It joins the stsc, stco/co64, stsz, stts, ctts and stss boxes once, and reads the media payload only when a sample is requested.
+
+```go
+// iterate samples of a track
+sr, err := mp4.NewSampleReader(file)
+if err != nil {
+   :
+}
+samples, err := sr.Samples(trackID)
+if err != nil {
+   :
+}
+for _, sample := range samples {
+   // sample.Offset, sample.Size, sample.DTS, sample.PTS, sample.Duration, sample.Sync
+}
+
+// read the payload of one sample
+sample, err := sr.ReadSample(trackID, 0)
+```
+
 ### Writing
 
 Writer helps you write a box tree.
